@@ -20,6 +20,11 @@ def get_pipeline(request: Request):
 async def health_check(
     pipeline=Depends(get_pipeline),
 ) -> HealthResponse:
+    """
+    Health check endpoint.
+
+    Returns the health status of the API and WhisperLive connection.
+    """
     status = pipeline.get_status()
     if status.state.value in ("ERROR", "DEGRADED"):
         return HealthResponse.unhealthy(status.last_error or "Unknown error")
@@ -30,6 +35,12 @@ async def health_check(
 async def get_status(
     pipeline=Depends(get_pipeline),
 ) -> StatusResponse:
+    """
+    Get the current pipeline status.
+
+    Returns detailed state including audio device, WebSocket connection,
+    queue depths, and any errors.
+    """
     return pipeline.get_status()
 
 
@@ -37,6 +48,12 @@ async def get_status(
 async def start_pipeline(
     pipeline=Depends(get_pipeline),
 ) -> dict:
+    """
+    Start the transcription pipeline.
+
+    Initializes audio capture and connects to WhisperLive.
+    Only works if pipeline is in STOPPED or ERROR state.
+    """
     if pipeline.state.value not in ("STOPPED", "ERROR"):
         raise HTTPException(
             status_code=400, detail=f"Cannot start from state: {pipeline.state.value}"
@@ -51,6 +68,11 @@ async def start_pipeline(
 async def stop_pipeline(
     pipeline=Depends(get_pipeline),
 ) -> dict:
+    """
+    Stop the transcription pipeline.
+
+    Stops audio capture and disconnects from WhisperLive.
+    """
     if pipeline.state.value == "STOPPED":
         return {"status": "already_stopped", "state": pipeline.state.value}
     await pipeline.stop()
@@ -61,4 +83,10 @@ async def stop_pipeline(
 async def get_metrics(
     pipeline=Depends(get_pipeline),
 ) -> Metrics:
+    """
+    Get pipeline metrics.
+
+    Returns counters and gauges for segments, audio frames,
+    reconnects, and queue depths.
+    """
     return pipeline.get_metrics()
