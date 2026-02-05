@@ -23,14 +23,15 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any
 
 import redis.asyncio as redis
-from redis.asyncio.client import PubSub
 from loguru import logger
+from redis.asyncio.client import PubSub
 
 from clio_api_server.app.core.config import get_settings
 
@@ -53,7 +54,7 @@ class StreamConfig:
 class StreamMessage:
     id: str
     stream: StreamType
-    data: Dict[str, Any]
+    data: dict[str, Any]
     created_at: float
 
     def to_json(self) -> str:
@@ -75,7 +76,7 @@ class ConsumerStats:
     messages_processed: int = 0
     messages_acked: int = 0
     messages_nacked: int = 0
-    last_processed_at: Optional[float] = None
+    last_processed_at: float | None = None
     current_lag: int = 0
 
 
@@ -95,14 +96,14 @@ class RedisStreamManager:
 
     def __init__(self):
         self.settings = get_settings()
-        self._redis: Optional[redis.Redis] = None
-        self._pubsub: Optional[PubSub] = None
+        self._redis: redis.Redis | None = None
+        self._pubsub: PubSub | None = None
         self._running: bool = False
-        self._streams: Dict[StreamType, StreamConfig] = {}
-        self._consumer_tasks: Set[asyncio.Task] = set()
-        self._message_handlers: Dict[StreamType, Callable] = {}
+        self._streams: dict[StreamType, StreamConfig] = {}
+        self._consumer_tasks: set[asyncio.Task] = set()
+        self._message_handlers: dict[StreamType, Callable] = {}
 
-        self._stats: Dict[str, ConsumerStats] = {}
+        self._stats: dict[str, ConsumerStats] = {}
 
         self._setup_streams()
 
@@ -154,7 +155,7 @@ class RedisStreamManager:
         if not self._redis:
             raise RedisConnectionError("Redis not connected")
 
-        for stream_type, config in self._streams.items():
+        for _stream_type, config in self._streams.items():
             try:
                 await self._redis.xadd(config.name, {"init": "1"}, maxlen=1, approximate=True)
                 logger.debug(f"Stream {config.name} ensured")
@@ -216,7 +217,7 @@ class RedisStreamManager:
         self._message_handlers[stream_type] = handler
         logger.info(f"Registered handler for stream {stream_type.value}")
 
-    async def publish_audio(self, audio_chunk: bytes, metadata: Dict[str, Any]) -> str:
+    async def publish_audio(self, audio_chunk: bytes, metadata: dict[str, Any]) -> str:
         """
         Publish audio chunk to the audio stream.
 
@@ -245,7 +246,7 @@ class RedisStreamManager:
         logger.debug(f"Published audio chunk: {message_id}")
         return message_id
 
-    async def publish_segment(self, segment_data: Dict[str, Any]) -> str:
+    async def publish_segment(self, segment_data: dict[str, Any]) -> str:
         """
         Publish transcribed segment to the segments stream.
 
@@ -271,7 +272,7 @@ class RedisStreamManager:
         )
         return message_id
 
-    async def publish_event(self, event_data: Dict[str, Any]) -> str:
+    async def publish_event(self, event_data: dict[str, Any]) -> str:
         """
         Publish final event to the events stream.
 
@@ -369,7 +370,7 @@ class RedisStreamManager:
 
         logger.info(f"Consumer {consumer_name} stopped")
 
-    async def get_stream_info(self, stream_type: StreamType) -> Dict[str, Any]:
+    async def get_stream_info(self, stream_type: StreamType) -> dict[str, Any]:
         """Get information about a stream."""
         if not self._redis:
             raise RedisConnectionError("Redis not connected")
@@ -392,7 +393,7 @@ class RedisStreamManager:
             ],
         }
 
-    async def get_consumer_lag(self, stream_type: StreamType) -> Dict[str, int]:
+    async def get_consumer_lag(self, stream_type: StreamType) -> dict[str, int]:
         """Get lag information for consumer groups."""
         if not self._redis:
             raise RedisConnectionError("Redis not connected")
@@ -412,7 +413,7 @@ class RedisStreamManager:
 
         return lag_info
 
-    def get_stats(self) -> Dict[str, Dict[str, Any]]:
+    def get_stats(self) -> dict[str, dict[str, Any]]:
         """Get statistics for all consumers."""
         stats = {}
         for name, data in self._stats.items():
@@ -424,7 +425,7 @@ class RedisStreamManager:
             }
         return stats
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check health of Redis connection and streams."""
         try:
             if not self._redis:

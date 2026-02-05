@@ -9,27 +9,19 @@ and can be enabled via configuration (REDIS_ENABLED=true).
 """
 
 import asyncio
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-import uuid
+from typing import Any
 
 from loguru import logger
 
 from clio_api_server.app.core.config import get_settings
 from clio_api_server.app.models.control import PipelineState, StatusResponse
-from clio_api_server.app.models.events import EventType, StreamingEvent
 from clio_api_server.app.models.metrics import Metrics
-from clio_api_server.app.models.transcript import TranscriptSegment
 from clio_api_server.app.services.audio_capture import AudioCapture
 from clio_api_server.app.services.redis_stream_manager import (
     RedisStreamManager,
-    StreamType,
 )
 from clio_api_server.app.services.redis_workers import (
     WorkerPool,
-    AggregationWorker,
-    BroadcastWorker,
 )
 
 
@@ -50,22 +42,22 @@ class RedisPipeline:
         self.state = PipelineState.STOPPED
         self._running = False
 
-        self.stream_manager: Optional[RedisStreamManager] = None
-        self.worker_pool: Optional[WorkerPool] = None
+        self.stream_manager: RedisStreamManager | None = None
+        self.worker_pool: WorkerPool | None = None
 
-        self.audio_capture: Optional[AudioCapture] = None
-        self._audio_queue: Optional[asyncio.Queue] = None
+        self.audio_capture: AudioCapture | None = None
+        self._audio_queue: asyncio.Queue | None = None
 
         self.metrics = Metrics()
 
-        self._audio_task: Optional[asyncio.Task] = None
-        self._whisper_task: Optional[asyncio.Task] = None
-        self._consumer_task: Optional[asyncio.Task] = None
+        self._audio_task: asyncio.Task | None = None
+        self._whisper_task: asyncio.Task | None = None
+        self._consumer_task: asyncio.Task | None = None
 
-        self._sse_clients: List[asyncio.Queue] = []
-        self._ws_clients: List[asyncio.Queue] = []
+        self._sse_clients: list[asyncio.Queue] = []
+        self._ws_clients: list[asyncio.Queue] = []
 
-        self._last_error: Optional[str] = None
+        self._last_error: str | None = None
 
     async def initialize(self) -> bool:
         """Initialize Redis connection and workers."""
@@ -303,7 +295,7 @@ class RedisPipeline:
             return aggregator.get_questions()
         return []
 
-    async def get_health(self) -> Dict[str, Any]:
+    async def get_health(self) -> dict[str, Any]:
         """Get health status."""
         if not self.stream_manager:
             return {"healthy": False, "error": "Not initialized"}

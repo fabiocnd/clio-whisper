@@ -12,18 +12,17 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
 from clio_api_server.app.core.config import get_settings
-from clio_api_server.app.models.events import EventType, StreamingEvent
 from clio_api_server.app.models.transcript import (
+    ConsolidatedTranscript,
+    Question,
     SegmentStatus,
     TranscriptSegment,
     UnconsolidatedTranscript,
-    ConsolidatedTranscript,
-    Question,
 )
 from clio_api_server.app.services.redis_stream_manager import (
     RedisStreamManager,
@@ -40,7 +39,7 @@ class BaseWorker(ABC):
         self._running = False
 
     @abstractmethod
-    async def process_message(self, msg_id: str, data: Dict[str, Any]) -> None:
+    async def process_message(self, msg_id: str, data: dict[str, Any]) -> None:
         """Process a single message from the stream."""
         pass
 
@@ -67,9 +66,9 @@ class TranscriptionWorker(BaseWorker):
 
     def __init__(self, stream_manager: RedisStreamManager):
         super().__init__(stream_manager)
-        self._audio_buffer: Dict[str, bytes] = {}
+        self._audio_buffer: dict[str, bytes] = {}
 
-    async def process_message(self, msg_id: str, data: Dict[str, Any]) -> None:
+    async def process_message(self, msg_id: str, data: dict[str, Any]) -> None:
         """Process audio chunk and send to WhisperLive."""
         correlation_id = data.get("correlation_id")
         timestamp = float(data.get("timestamp", time.time()))
@@ -82,12 +81,10 @@ class TranscriptionWorker(BaseWorker):
         audio_chunk = bytes.fromhex(audio_hex)
         logger.debug(f"Processing audio chunk {msg_id}: {len(audio_chunk)} bytes")
 
-        # In a real implementation, this would send to WhisperLive
-        # For now, we simulate the transcription result
         await self._simulate_transcription(msg_id, correlation_id, timestamp, audio_chunk)
 
     async def _simulate_transcription(
-        self, msg_id: str, correlation_id: Optional[str], timestamp: float, audio_chunk: bytes
+        self, msg_id: str, correlation_id: str | None, timestamp: float, audio_chunk: bytes
     ) -> None:
         """Simulate Whisper transcription result."""
         simulated_segment = {
@@ -119,11 +116,11 @@ class AggregationWorker(BaseWorker):
         super().__init__(stream_manager)
         self.unconsolidated = UnconsolidatedTranscript()
         self.consolidated = ConsolidatedTranscript()
-        self.questions: Dict[str, Question] = {}
-        self._segment_cache: Dict[str, str] = {}
-        self._commit_timestamps: Dict[str, float] = {}
+        self.questions: dict[str, Question] = {}
+        self._segment_cache: dict[str, str] = {}
+        self._commit_timestamps: dict[str, float] = {}
 
-    async def process_message(self, msg_id: str, data: Dict[str, Any]) -> None:
+    async def process_message(self, msg_id: str, data: dict[str, Any]) -> None:
         """Process a transcription segment."""
         segment_data = json.loads(data.get("data", "{}"))
 
@@ -246,7 +243,7 @@ class AggregationWorker(BaseWorker):
     def get_consolidated(self) -> ConsolidatedTranscript:
         return self.consolidated
 
-    def get_questions(self) -> List[Question]:
+    def get_questions(self) -> list[Question]:
         return list(self.questions.values())
 
 
@@ -262,8 +259,8 @@ class BroadcastWorker(BaseWorker):
 
     def __init__(self, stream_manager: RedisStreamManager):
         super().__init__(stream_manager)
-        self._sse_queues: List[asyncio.Queue] = []
-        self._ws_queues: List[asyncio.Queue] = []
+        self._sse_queues: list[asyncio.Queue] = []
+        self._ws_queues: list[asyncio.Queue] = []
 
     def add_sse_client(self, queue: asyncio.Queue) -> None:
         """Add an SSE client queue."""
@@ -283,7 +280,7 @@ class BroadcastWorker(BaseWorker):
         if queue in self._ws_queues:
             self._ws_queues.remove(queue)
 
-    async def process_message(self, msg_id: str, data: Dict[str, Any]) -> None:
+    async def process_message(self, msg_id: str, data: dict[str, Any]) -> None:
         """Broadcast event to all connected clients."""
         event_data = json.loads(data.get("data", "{}"))
 
@@ -294,23 +291,23 @@ class BroadcastWorker(BaseWorker):
             f"Broadcasted event {msg_id} to {len(self._sse_queues)} SSE + {len(self._ws_queues)} WS clients"
         )
 
-    async def _broadcast_sse(self, event_data: Dict[str, Any]) -> None:
+    async def _broadcast_sse(self, event_data: dict[str, Any]) -> None:
         """Broadcast to SSE clients."""
         event = f"data: {json.dumps(event_data)}\n\n"
         for queue in self._sse_queues[:]:
             try:
                 await asyncio.wait_for(queue.put(event), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             except Exception:
                 self.remove_sse_client(queue)
 
-    async def _broadcast_websocket(self, event_data: Dict[str, Any]) -> None:
+    async def _broadcast_websocket(self, event_data: dict[str, Any]) -> None:
         """Broadcast to WebSocket clients."""
         for queue in self._ws_queues[:]:
             try:
                 await asyncio.wait_for(queue.put(event_data), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             except Exception:
                 self.remove_ws_client(queue)
@@ -323,13 +320,13 @@ class WorkerPool:
 
     def __init__(self, stream_manager: RedisStreamManager):
         self.stream_manager = stream_manager
-        self.transcription_workers: List[TranscriptionWorker] = []
-        self.aggregation_workers: List[AggregationWorker] = []
-        self.broadcast_workers: List[BroadcastWorker] = []
+        self.transcription_workers: list[TranscriptionWorker] = []
+        self.aggregation_workers: list[AggregationWorker] = []
+        self.broadcast_workers: list[BroadcastWorker] = []
 
     def create_transcription_workers(self, count: int = 2) -> None:
         """Create transcription workers."""
-        for i in range(count):
+        for _ in range(count):
             worker = TranscriptionWorker(self.stream_manager)
             self.transcription_workers.append(worker)
             self.stream_manager.register_handler(StreamType.AUDIO, worker.process_message)
@@ -337,7 +334,7 @@ class WorkerPool:
 
     def create_aggregation_workers(self, count: int = 2) -> None:
         """Create aggregation workers."""
-        for i in range(count):
+        for _ in range(count):
             worker = AggregationWorker(self.stream_manager)
             self.aggregation_workers.append(worker)
             self.stream_manager.register_handler(StreamType.SEGMENTS, worker.process_message)
@@ -345,7 +342,7 @@ class WorkerPool:
 
     def create_broadcast_workers(self, count: int = 1) -> None:
         """Create broadcast workers."""
-        for i in range(count):
+        for _ in range(count):
             worker = BroadcastWorker(self.stream_manager)
             self.broadcast_workers.append(worker)
             self.stream_manager.register_handler(StreamType.EVENTS, worker.process_message)
@@ -365,10 +362,10 @@ class WorkerPool:
         ):
             await worker.stop()
 
-    def get_aggregator(self) -> Optional[AggregationWorker]:
+    def get_aggregator(self) -> AggregationWorker | None:
         """Get an aggregation worker for transcript retrieval."""
         return self.aggregation_workers[0] if self.aggregation_workers else None
 
-    def get_broadcaster(self) -> Optional[BroadcastWorker]:
+    def get_broadcaster(self) -> BroadcastWorker | None:
         """Get a broadcast worker for client management."""
         return self.broadcast_workers[0] if self.broadcast_workers else None
