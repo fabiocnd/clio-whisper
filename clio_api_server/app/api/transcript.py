@@ -25,6 +25,10 @@ async def get_unconsolidated_transcript(
     Returns all transcription segments in their raw form, including partial,
     final, and committed segments with timing information.
     """
+    if hasattr(pipeline, "get_unconsolidated_transcript"):
+        result = pipeline.get_unconsolidated_transcript()
+        if result is not None:
+            return result
     return pipeline.aggregator.get_unconsolidated()
 
 
@@ -37,6 +41,10 @@ async def get_consolidated_transcript(
 
     Returns deduplicated, aggregated text from all committed segments.
     """
+    if hasattr(pipeline, "get_consolidated_transcript"):
+        result = pipeline.get_consolidated_transcript()
+        if result is not None:
+            return result
     return pipeline.aggregator.get_consolidated()
 
 
@@ -50,4 +58,6 @@ async def get_questions(
     Returns a list of detected questions, both explicit (with ?) and
     implicit (imperative prompts like 'Imagine...').
     """
+    if hasattr(pipeline, "get_questions"):
+        return pipeline.get_questions()
     return pipeline.aggregator.get_questions()

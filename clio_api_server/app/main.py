@@ -12,6 +12,7 @@ from uvicorn import Config, Server
 from clio_api_server.app.api import transcript_router, control_router, streaming_router
 from clio_api_server.app.core.config import get_settings
 from clio_api_server.app.services.pipeline import Pipeline
+from clio_api_server.app.services.redis_pipeline import RedisPipeline
 
 
 settings = get_settings()
@@ -50,7 +51,14 @@ async def startup_event():
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
     )
     logger.info("Clio Whisper API starting up")
-    app.state.pipeline = Pipeline()
+
+    if settings.redis_enabled:
+        logger.info("Redis mode enabled - using Redis-based pipeline")
+        app.state.pipeline = RedisPipeline()
+    else:
+        logger.info("Redis mode disabled - using legacy in-memory pipeline")
+        app.state.pipeline = Pipeline()
+
     logger.info("Pipeline singleton created")
 
 

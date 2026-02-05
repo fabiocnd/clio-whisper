@@ -44,7 +44,22 @@ class Settings(BaseSettings):
 
     ui_enabled: bool = True
 
+    redis_enabled: bool = False
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: Optional[str] = None
+    redis_max_connections: int = 10
+    redis_stream_prefix: str = "clio"
+    redis_consumer_prefix: str = "clio-consumer"
+
     project_root: Path = Path(__file__).parent.parent.parent.parent
+
+    @property
+    def redis_url(self) -> str:
+        if self.redis_password:
+            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def audio_bytes_per_chunk(self) -> int:

@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 # Clio Whisper Ecosystem Manager - PowerShell
-# Manage WhisperLive Docker container and API server
+# Manage WhisperLive Docker container, Redis, and API server
 #
 
 $ErrorActionPreference = "Stop"
@@ -9,8 +9,10 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $ContainerName = "clio-whisperlive"
+$RedisContainerName = "clio-redis"
 $ApiPort = 8000
 $WhisperPort = 9090
+$RedisPort = 6379
 
 # Colors for output
 $Green = [System.ConsoleColor]::Green
@@ -140,6 +142,85 @@ function Restart-WhisperLive {
     Stop-WhisperLive
     Start-Sleep -Seconds 2
     Start-WhisperLive
+}
+
+function Start-Redis {
+    Write-Header "Starting Redis Server"
+
+    if (-not (Test-DockerRunning)) {
+        Write-Error "Docker is not running. Please start Docker Desktop."
+        return $false
+    }
+
+    if (Test-ContainerRunning -Name $RedisContainerName) {
+        $status = Get-ContainerStatus -Name $RedisContainerName
+        if ($status -eq "running") {
+            Write-Success "Redis container is already running"
+            return $true
+        }
+        Write-Warning "Container exists but is not running. Starting..."
+        docker start $RedisContainerName
+    }
+    else {
+        Write-Status "Creating and starting Redis container..."
+        docker run -itd --name $RedisContainerName -p ${RedisPort}:6379 redis:alpine
+    }
+
+    # Wait for Redis to be ready
+    Write-Status "Waiting for Redis to be ready..."
+    $maxWait = 30
+    $waited = 0
+    while ($waited -lt $maxWait) {
+        try {
+            $socket = New-Object Net.Sockets.TcpClient
+            $socket.Connect("localhost", $RedisPort)
+            $socket.Close()
+            Write-Success "Redis is ready on port $RedisPort"
+            return $true
+        }
+        catch {
+            Start-Sleep -Seconds 2
+            $waited += 2
+            Write-Status "Waiting... ($waited/$maxWait seconds)"
+        }
+    }
+
+    Write-Error "Redis did not become ready in time"
+    return $false
+}
+
+function Stop-Redis {
+    Write-Header "Stopping Redis Server"
+
+    if (-not (Test-ContainerRunning -Name $RedisContainerName)) {
+        Write-Warning "Redis container is not running"
+        return $true
+    }
+
+    Write-Status "Stopping Redis container..."
+    docker stop $RedisContainerName | Out-Null
+    Write-Success "Redis container stopped"
+    return $true
+}
+
+function Restart-Redis {
+    Write-Header "Restarting Redis Server"
+    Stop-Redis
+    Start-Sleep -Seconds 2
+    Start-Redis
+}
+
+function Test-RedisConnection {
+    param([int]$Port = $RedisPort)
+    try {
+        $socket = New-Object Net.Sockets.TcpClient
+        $socket.Connect("localhost", $Port)
+        $socket.Close()
+        return $true
+    }
+    catch {
+        return $false
+    }
 }
 
 function Start-ApiServer {
@@ -297,7 +378,7 @@ function Restart-Ecosystem {
 
 function Show-Status {
     Write-Header "Clio Whisper Ecosystem Status"
-    
+
     # Docker status
     Write-Status "Docker: " -NoNewline
     if (Test-DockerRunning) {
@@ -306,7 +387,18 @@ function Show-Status {
     else {
         Write-Host "Not Running" -ForegroundColor $Red
     }
-    
+
+    # Redis status
+    Write-Status "Redis ($RedisContainerName): " -NoNewline
+    $redisStatus = Get-ContainerStatus -Name $RedisContainerName
+    if ($redisStatus -eq "running") {
+        Write-Host "Running" -ForegroundColor $Green
+        Write-Status "  Port: $RedisPort"
+    }
+    else {
+        Write-Host "Stopped" -ForegroundColor $Red
+    }
+
     # WhisperLive status
     Write-Status "WhisperLive ($ContainerName): " -NoNewline
     $status = Get-ContainerStatus -Name $ContainerName
@@ -320,7 +412,7 @@ function Show-Status {
     else {
         Write-Host "Stopped" -ForegroundColor $Red
     }
-    
+
     # API Server status
     Write-Status "API Server (port $ApiPort): " -NoNewline
     try {
@@ -337,7 +429,7 @@ function Show-Status {
     catch {
         Write-Host "Stopped" -ForegroundColor $Red
     }
-    
+
     # Pipeline status
     Write-Status "Pipeline: " -NoNewline
     try {
@@ -358,28 +450,40 @@ function Show-Help {
     Write-Host @"
 
 Clio Whisper Ecosystem Manager
-=============================
+============================
 
 USAGE:
     .\clio-whisper.ps1 [COMMAND]
 
-COMMANDS:
+COMMANDS - WhisperLive:
     start           Start WhisperLive container only
     stop            Stop WhisperLive container only
     restart         Restart WhisperLive container only
+
+COMMANDS - Redis:
+    redis-start     Start Redis container only
+    redis-stop      Stop Redis container only
+    redis-restart   Restart Redis container only
+
+COMMANDS - API:
     api-start       Start API server only
     api-stop        Stop API server only
     api-restart     Restart API server only
-    start-all       Start complete ecosystem (container + API)
-    stop-all        Stop complete ecosystem (container + API)
+
+COMMANDS - Ecosystem:
+    start-all       Start complete ecosystem (Redis + WhisperLive + API)
+    stop-all        Stop complete ecosystem
     restart-all     Restart complete ecosystem
     status          Show status of all components
     help            Show this help message
 
+ENVIRONMENT:
+    Set REDIS_ENABLED=true in .env to enable Redis pipeline mode
+
 EXAMPLES:
     .\clio-whisper.ps1 start-all
+    .\clio-whisper.ps1 redis-start
     .\clio-whisper.ps1 status
-    .\clio-whisper.ps1 restart
 
 "@
 }
@@ -388,12 +492,22 @@ EXAMPLES:
 $command = $args[0]
 
 switch ($command) {
+    # WhisperLive
     "start"          { Start-WhisperLive }
     "stop"           { Stop-WhisperLive }
     "restart"        { Restart-WhisperLive }
+
+    # Redis
+    "redis-start"    { Start-Redis }
+    "redis-stop"     { Stop-Redis }
+    "redis-restart"  { Restart-Redis }
+
+    # API
     "api-start"      { Start-ApiServer }
     "api-stop"       { Stop-ApiServer }
     "api-restart"    { Restart-ApiServer }
+
+    # Ecosystem
     "start-all"      { Start-Ecosystem }
     "stop-all"       { Stop-Ecosystem }
     "restart-all"    { Restart-Ecosystem }
