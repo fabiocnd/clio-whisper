@@ -1,13 +1,13 @@
 import asyncio
 import json
-import time
+import uuid
 from typing import Any, Callable, Optional
 
+import numpy as np
 import websockets
 from loguru import logger
 
-from clio_api_server.app.core.config import WhisperLiveConfig, get_settings
-from clio_api_server.app.models.events import WhisperLiveEvent, StreamingEvent
+from clio_api_server.app.core.config import get_settings
 
 
 class WhisperLiveClient:
@@ -15,37 +15,37 @@ class WhisperLiveClient:
 
     def __init__(
         self,
-        config: Optional[WhisperLiveConfig] = None,
-        event_callback: Optional[Callable[[StreamingEvent], None]] = None,
+        event_callback: Optional[Callable[[Any], None]] = None,
     ):
-        self.config = config or get_settings().whisperlive
+        self.settings = get_settings()
         self.event_callback = event_callback
         self._websocket: Optional[websockets.WebSocketClientProtocol] = None
         self._running = False
         self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 5
+        self._max_reconnect_attempts = 10
         self._base_reconnect_delay = 1.0
         self._connected = False
-        self._backend: Optional[str] = None
+        self._backend = None
         self._messages_sent = 0
         self._messages_received = 0
+        self._waiting = False
 
-    def register_event_callback(self, callback: Callable[[StreamingEvent], None]) -> None:
+    def register_event_callback(self, callback: Callable[[Any], None]) -> None:
         self.event_callback = callback
 
     def _create_config_message(self) -> dict:
         return {
-            "uid": self.config.uid,
-            "language": self.config.language,
-            "task": self.config.task,
-            "model": self.config.model,
-            "use_vad": self.config.use_vad,
-            "send_last_n_segments": self.config.send_last_n_segments,
+            "uid": str(uuid.uuid4()),
+            "language": self.settings.whisperlive_language,
+            "task": self.settings.whisperlive_task,
+            "model": self.settings.whisperlive_model,
+            "use_vad": self.settings.whisperlive_use_vad,
+            "send_last_n_segments": self.settings.whisperlive_send_last_n_segments,
         }
 
     async def _connect(self) -> bool:
         try:
-            ws_url = f"ws://{self.config.host}:{self.config.port}"
+            ws_url = f"ws://{self.settings.whisperlive_host}:{self.settings.whisperlive_port}"
             logger.info(f"Connecting to WhisperLive at {ws_url}")
             self._websocket = await asyncio.wait_for(
                 websockets.connect(ws_url, close_timeout=10),
@@ -63,54 +63,67 @@ class WhisperLiveClient:
     async def _send_config(self) -> bool:
         try:
             config_msg = self._create_config_message()
-            await self._websocket.send(json.dumps(config_msg))
+            config_str = json.dumps(config_msg)
+            logger.info(f"Sending config: {config_str}")
+            await self._websocket.send(config_str)
             self._messages_sent += 1
-            logger.info(f"Sent config: {json.dumps(config_msg)}")
+            logger.info("Config sent successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to send config: {e}")
+            import traceback
+
+            traceback.print_exc()
             return False
 
     async def _wait_for_ready(self) -> bool:
         try:
-            while self._running:
+            logger.info("Waiting for SERVER_READY...")
+            while True:
                 message = await asyncio.wait_for(
                     self._websocket.recv(),
                     timeout=30.0,
                 )
                 self._messages_received += 1
-                event = self._parse_message(message)
-                if event:
-                    await self._handle_event(event)
-                    if event.message == "SERVER_READY":
-                        logger.info(f"Server ready with backend: {event.backend}")
-                        self._backend = event.backend
-                        return True
+                logger.info(f"Received: {message[:200]}")
+
+                if isinstance(message, bytes):
+                    logger.warning(f"Received binary data, skipping")
+                    continue
+
+                try:
+                    event = json.loads(message)
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON: {message[:100]}")
+                    continue
+
+                if self.event_callback:
+                    self.event_callback(event)
+
+                if event.get("status") == "WAIT":
+                    logger.warning(f"Server busy, wait time: {event.get('message')} minutes")
+                    self._waiting = True
+                    return False
+
+                if event.get("message") == "SERVER_READY":
+                    logger.info(f"SERVER_READY with backend: {event.get('backend')}")
+                    self._backend = event.get("backend")
+                    self._connected = True
+                    return True
+
         except asyncio.TimeoutError:
             logger.error("Timeout waiting for SERVER_READY")
         except Exception as e:
             logger.error(f"Error waiting for ready: {e}")
+            import traceback
+
+            traceback.print_exc()
         return False
 
-    def _parse_message(self, message: str) -> Optional[WhisperLiveEvent]:
-        try:
-            data = json.loads(message)
-            return WhisperLiveEvent(**data)
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON message: {message[:100]}")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to parse message: {e}")
-            return None
-
-    async def _handle_event(self, event: WhisperLiveEvent) -> None:
-        if self.event_callback:
-            streaming_events = StreamingEvent.from_whisper_event(event)
-            for se in streaming_events:
-                self.event_callback(se)
-
     async def _audio_sender(self, audio_queue: asyncio.Queue) -> None:
-        logger.info("Starting audio sender task")
+        logger.info("Audio sender task started")
+        audio_format = self.settings.whisperlive_audio_format
+
         while self._running:
             try:
                 audio_data = await asyncio.wait_for(
@@ -120,7 +133,13 @@ class WhisperLiveClient:
                 if not self._running:
                     break
                 if self._websocket and self._connected:
-                    await self._websocket.send(audio_data)
+                    if audio_format == "float32":
+                        audio_array = (
+                            np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                        )
+                        await self._websocket.send(audio_array.tobytes())
+                    else:
+                        await self._websocket.send(audio_data)
                     self._messages_sent += 1
             except asyncio.TimeoutError:
                 continue
@@ -133,7 +152,10 @@ class WhisperLiveClient:
         logger.info("Audio sender task stopped")
 
     async def _event_receiver(self) -> None:
-        logger.info("Starting event receiver task")
+        print(
+            f"[WS] Event receiver started. Callback registered: {self.event_callback is not None}"
+        )
+        logger.info("Event receiver task started")
         while self._running:
             try:
                 message = await asyncio.wait_for(
@@ -141,37 +163,64 @@ class WhisperLiveClient:
                     timeout=30.0,
                 )
                 self._messages_received += 1
-                event = self._parse_message(message)
-                if event:
-                    await self._handle_event(event)
+
+                if isinstance(message, bytes):
+                    continue
+
+                try:
+                    event = json.loads(message)
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON: {message[:100]}")
+                    continue
+
+                if self.event_callback:
+                    try:
+                        self.event_callback(event)
+                    except Exception as cb_err:
+                        logger.error(f"Callback error: {cb_err}")
+
+                if event.get("message") == "DISCONNECT":
+                    logger.warning("Server disconnected")
+                    self._connected = False
+                    break
+
             except asyncio.TimeoutError:
                 continue
             except websockets.exceptions.ConnectionClosed as e:
                 logger.warning(f"Connection closed: {e}")
+                self._connected = False
                 break
             except Exception as e:
                 logger.error(f"Event receiver error: {e}")
                 break
         logger.info("Event receiver task stopped")
 
-    async def _calculate_reconnect_delay(self) -> float:
-        delay = self._base_reconnect_delay * (2 ** self._reconnect_attempts)
-        import random
-        jitter = delay * 0.1 * random.random()
-        return min(delay + jitter, 30.0)
-
     async def connect(self, audio_queue: asyncio.Queue) -> bool:
+        logger.info("WhisperLiveClient.connect: Starting connection")
+
+        self._running = True
+        self._connected = False
+        self._waiting = False
+
         if not await self._connect():
+            logger.error("Failed to connect")
+            self._running = False
             return False
 
         if not await self._send_config():
+            await self._websocket.close()
+            self._running = False
             return False
 
         if not await self._wait_for_ready():
+            try:
+                await self._websocket.close()
+            except Exception:
+                pass
+            self._running = False
             return False
 
-        self._running = True
-        self._connected = True
+        logger.info("WhisperLiveClient: Connected successfully")
         self._reconnect_attempts = 0
 
         asyncio.create_task(self._audio_sender(audio_queue))
@@ -185,7 +234,12 @@ class WhisperLiveClient:
             logger.error("Max reconnect attempts reached")
             return False
 
-        delay = await self._calculate_reconnect_delay()
+        delay = self._base_reconnect_delay * (2 ** (self._reconnect_attempts - 1))
+        import random
+
+        jitter = delay * random.uniform(0.8, 1.2)
+        delay = min(delay + jitter, 30.0)
+
         logger.info(f"Reconnecting in {delay:.2f}s (attempt {self._reconnect_attempts})")
         await asyncio.sleep(delay)
 
@@ -195,12 +249,15 @@ class WhisperLiveClient:
             except Exception:
                 pass
         self._websocket = None
-
         self._connected = False
-        success = await self.connect(audio_queue)
-        if success:
-            logger.info("Reconnect successful")
-        return success
+
+        return await self.connect(audio_queue)
+
+    def is_connected(self) -> bool:
+        return self._connected and self._running
+
+    def was_waiting(self) -> bool:
+        return self._waiting
 
     async def send_end_of_audio(self) -> None:
         if self._websocket and self._connected:
@@ -221,9 +278,6 @@ class WhisperLiveClient:
             self._websocket = None
         self._connected = False
         logger.info("WebSocket connection closed")
-
-    def is_connected(self) -> bool:
-        return self._connected
 
     def get_stats(self) -> dict:
         return {

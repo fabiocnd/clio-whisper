@@ -107,31 +107,21 @@ function Wait-WhisperLiveReady {
         Write-Host "  Attempt $attempt/$maxAttempts..." -NoNewline -ForegroundColor Yellow
 
         try {
-            $response = Invoke-WebRequest -Uri "http://localhost:${WHISPERLIVE_PORT}/health" `
-                -TimeoutSec 2 `
-                -ErrorAction SilentlyContinue 2>$null
+            $tcpClient = New-Object System.Net.Sockets.TcpClient
+            $connection = $tcpClient.ConnectAsync("localhost", $WHISPERLIVE_PORT)
+            $waitHandle = $connection.AsyncWaitHandle
+            $waited = $waitHandle.WaitOne(2000, $false)
 
-            if ($response.StatusCode -eq 200) {
+            if ($waited -and $tcpClient.Connected) {
+                $tcpClient.Close()
                 Write-Host " READY" -ForegroundColor Green
                 $ready = $true
                 break
             }
+            $tcpClient.Dispose()
         }
         catch {
-            # Try WebSocket connection
-            try {
-                $ws = New-Object System.Net.WebSocket
-                $ws.Connect("ws://localhost:${WHISPERLIVE_PORT}")
-                if ($ws.State -eq 'Open') {
-                    $ws.Dispose()
-                    Write-Host " READY" -ForegroundColor Green
-                    $ready = $true
-                    break
-                }
-            }
-            catch {
-                # Port not ready yet
-            }
+            # Port not ready yet
         }
 
         Write-Host " NOT READY"

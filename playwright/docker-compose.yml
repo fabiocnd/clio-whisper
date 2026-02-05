@@ -1,0 +1,18 @@
+services:
+  clio-ui:
+    image: your-ui-image
+    ports:
+      - "8000:8000"
+
+  playwright-runner:
+    image: mcr.microsoft.com/playwright/python:v1.50.0-noble
+    working_dir: /work
+    volumes:
+      - ./e2e:/work
+      - ./artifacts:/artifacts
+    environment:
+      - TARGET_URL=http://clio-ui:8000
+      - ARTIFACTS_DIR=/artifacts
+    depends_on:
+      - clio-ui
+    command: ["python", "run_checks.py"]

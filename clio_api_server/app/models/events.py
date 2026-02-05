@@ -51,52 +51,73 @@ class StreamingEvent(BaseModel):
     event_type: EventType
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     data: Dict[str, Any] = Field(default_factory=dict)
-    segment_id: Optional[int] = None
+    segment_id: Optional[str] = None
     text: Optional[str] = None
     client_uid: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    language: Optional[str] = None
+    language_prob: Optional[float] = None
 
     @classmethod
     def from_whisper_event(cls, event: WhisperLiveEvent) -> List["StreamingEvent"]:
         events = []
         if event.message == "SERVER_READY":
-            events.append(cls(
-                event_id=f"sr_{datetime.utcnow().timestamp()}",
-                event_type=EventType.SERVER_READY,
-                data={"backend": event.backend, "uid": event.uid},
-            ))
+            events.append(
+                cls(
+                    event_id=f"sr_{datetime.utcnow().timestamp()}",
+                    event_type=EventType.SERVER_READY,
+                    data={"backend": event.backend, "uid": event.uid},
+                )
+            )
         elif event.message == "DISCONNECT":
-            events.append(cls(
-                event_id=f"dc_{datetime.utcnow().timestamp()}",
-                event_type=EventType.DISCONNECT,
-                data={"uid": event.uid},
-            ))
+            events.append(
+                cls(
+                    event_id=f"dc_{datetime.utcnow().timestamp()}",
+                    event_type=EventType.DISCONNECT,
+                    data={"uid": event.uid},
+                )
+            )
         elif event.status == "WAIT":
-            events.append(cls(
-                event_id=f"wait_{datetime.utcnow().timestamp()}",
-                event_type=EventType.WAIT,
-                data={"message": event.message},
-            ))
+            events.append(
+                cls(
+                    event_id=f"wait_{datetime.utcnow().timestamp()}",
+                    event_type=EventType.WAIT,
+                    data={"message": event.message},
+                )
+            )
         elif event.language:
-            events.append(cls(
-                event_id=f"lang_{datetime.utcnow().timestamp()}",
-                event_type=EventType.LANGUAGE_DETECTED,
-                data={"language": event.language, "probability": event.language_prob},
-            ))
+            events.append(
+                cls(
+                    event_id=f"lang_{datetime.utcnow().timestamp()}",
+                    event_type=EventType.LANGUAGE_DETECTED,
+                    data={"language": event.language, "probability": event.language_prob},
+                )
+            )
         if event.segments:
             for seg in event.segments:
                 event_type = EventType.FINAL if seg.completed else EventType.PARTIAL
-                events.append(cls(
-                    event_id=f"seg_{seg.id}_{datetime.utcnow().timestamp()}",
-                    event_type=event_type,
-                    data={"id": seg.id, "start": seg.start, "end": seg.end, "completed": seg.completed},
-                    segment_id=seg.id,
-                    text=seg.text.strip() if seg.text else None,
-                    client_uid=event.uid,
-                ))
+                events.append(
+                    cls(
+                        event_id=f"seg_{seg.id}_{datetime.utcnow().timestamp()}",
+                        event_type=event_type,
+                        data={
+                            "id": seg.id,
+                            "start": seg.start,
+                            "end": seg.end,
+                            "completed": seg.completed,
+                        },
+                        segment_id=seg.id,
+                        text=seg.text.strip() if seg.text else None,
+                        client_uid=event.uid,
+                    )
+                )
         if event.status == "ERROR":
-            events.append(cls(
-                event_id=f"err_{datetime.utcnow().timestamp()}",
-                event_type=EventType.ERROR,
-                data={"message": event.message},
-            ))
+            events.append(
+                cls(
+                    event_id=f"err_{datetime.utcnow().timestamp()}",
+                    event_type=EventType.ERROR,
+                    data={"message": event.message},
+                )
+            )
         return events

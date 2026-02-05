@@ -1,5 +1,4 @@
 import asyncio
-import json
 import wave
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -8,16 +7,15 @@ import numpy as np
 import sounddevice as sd
 from loguru import logger
 
-from clio_api_server.app.core.config import AudioConfig, get_settings
+from clio_api_server.app.core.config import get_settings
 
 
 class AudioCapture:
     def __init__(
         self,
-        config: Optional[AudioConfig] = None,
         audio_queue: Optional[asyncio.Queue] = None,
     ):
-        self.config = config or get_settings().audio
+        self.settings = get_settings()
         self.audio_queue = audio_queue or asyncio.Queue(maxsize=100)
         self._running = False
         self._stream: Optional[sd.InputStream] = None
@@ -53,11 +51,11 @@ class AudioCapture:
         return devices
 
     def select_device(self) -> int:
-        if self.config.device_index >= 0:
-            return self.config.device_index
-        if self.config.device_name:
+        if self.settings.audio_device_index >= 0:
+            return self.settings.audio_device_index
+        if self.settings.audio_device_name:
             for idx, info in enumerate(sd.query_devices()):
-                if self.config.device_name.lower() in info["name"].lower():
+                if self.settings.audio_device_name.lower() in info["name"].lower():
                     logger.info(f"Selected device by name: {info['name']}")
                     return idx
         try:
@@ -70,11 +68,6 @@ class AudioCapture:
                 if info["max_input_channels"] > 0:
                     return idx
         raise RuntimeError("No audio input device available")
-
-    def _bytes_to_float_array(self, audio_bytes: bytes) -> np.ndarray:
-        raw_data = np.frombuffer(buffer=audio_bytes, dtype=np.int16)
-        float_data = raw_data.astype(np.float32) / 32768.0
-        return float_data
 
     async def _capture_microphone(self) -> None:
         self._running = True
@@ -99,10 +92,10 @@ class AudioCapture:
 
         self._stream = sd.InputStream(
             device=device_index,
-            samplerate=self.config.sample_rate,
-            channels=self.config.channels,
+            samplerate=self.settings.audio_sample_rate,
+            channels=self.settings.audio_channels,
             dtype="int16",
-            blocksize=self.config.chunk_size,
+            blocksize=self.settings.audio_chunk_size,
             callback=audio_callback,
         )
 
@@ -117,7 +110,7 @@ class AudioCapture:
             logger.info(f"Audio capture stopped. Frames captured: {self._frame_count}")
 
     async def _capture_file(self) -> None:
-        file_path = Path(self.config.input_file)
+        file_path = Path(self.settings.audio_input_file)
         if not file_path.exists():
             raise FileNotFoundError(f"Audio file not found: {file_path}")
 
@@ -125,7 +118,7 @@ class AudioCapture:
         self._audio_file = wave.open(str(file_path), "rb")
         self._running = True
 
-        chunk_size = self.config.chunk_size * self.config.channels * 2
+        chunk_size = self.settings.audio_chunk_size * self.settings.audio_channels * 2
         while self._running:
             audio_data = self._audio_file.readframes(chunk_size // 2)
             if not audio_data:
@@ -149,7 +142,7 @@ class AudioCapture:
     async def start(self) -> None:
         self._frame_count = 0
         self._dropped_frames = 0
-        if self.config.input_mode == "file":
+        if self.settings.audio_input_mode == "file":
             await self._capture_file()
         else:
             await self._capture_microphone()

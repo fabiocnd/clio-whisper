@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+import uuid
 
 from loguru import logger
 
@@ -17,9 +19,10 @@ class Pipeline:
     def __init__(self):
         self.settings = get_settings()
         self.state = PipelineState.STOPPED
+        self._running = False
 
-        self.audio_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
-        self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self.audio_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
         self.audio_capture = AudioCapture(audio_queue=self.audio_queue)
         self.whisper_client = WhisperLiveClient()
@@ -38,15 +41,126 @@ class Pipeline:
         self._setup_callbacks()
 
     def _setup_callbacks(self) -> None:
-        self.whisper_client.register_event_callback(self._on_whisper_event)
-        self.aggregator.register_event_callback(self._on_aggregator_event)
+        self.whisper_client.register_event_callback(self._on_whisper_event_sync)
+        self.aggregator.register_event_callback(self._on_aggregator_event_sync)
 
-    async def _on_whisper_event(self, event: StreamingEvent) -> None:
+    def _on_aggregator_event_sync(self, event: StreamingEvent) -> None:
+        self._broadcast_event(event)
+
+    def _on_whisper_event_sync(self, event: Any) -> None:
         try:
-            await self.event_queue.put(event)
-        except asyncio.QueueFull:
-            self.metrics.segments_dropped += 1
-            logger.warning("Event queue full, dropping event")
+            streaming_events = self._convert_to_streaming_events(event)
+            for se in streaming_events:
+                try:
+                    self.event_queue.put_nowait(se)
+                except asyncio.QueueFull:
+                    self.metrics.segments_dropped += 1
+        except Exception as e:
+            logger.error(f"Error converting event: {e}")
+
+    def _convert_to_streaming_events(self, event: dict) -> List[StreamingEvent]:
+        from clio_api_server.app.models.events import StreamingEvent, EventType
+
+        events = []
+
+        msg_type = event.get("message", "")
+        status = event.get("status", "")
+
+        if msg_type == "SERVER_READY":
+            events.append(
+                StreamingEvent(
+                    event_id=f"sr_{uuid.uuid4().hex[:8]}",
+                    event_type=EventType.SERVER_READY,
+                    data=event,
+                )
+            )
+            return events
+
+        if msg_type == "DISCONNECT":
+            events.append(
+                StreamingEvent(
+                    event_id=f"dc_{uuid.uuid4().hex[:8]}",
+                    event_type=EventType.DISCONNECT,
+                    data=event,
+                )
+            )
+            return events
+
+        if status == "WAIT":
+            events.append(
+                StreamingEvent(
+                    event_id=f"wait_{uuid.uuid4().hex[:8]}",
+                    event_type=EventType.WAIT,
+                    data=event,
+                )
+            )
+            return events
+
+        if status == "ERROR":
+            events.append(
+                StreamingEvent(
+                    event_id=f"err_{uuid.uuid4().hex[:8]}",
+                    event_type=EventType.ERROR,
+                    data=event,
+                )
+            )
+            return events
+
+        if event.get("language"):
+            events.append(
+                StreamingEvent(
+                    event_id=f"lang_{uuid.uuid4().hex[:8]}",
+                    event_type=EventType.LANGUAGE_DETECTED,
+                    data=event,
+                    language=event.get("language"),
+                    language_prob=event.get("language_prob"),
+                )
+            )
+
+        segments = event.get("segments", event.get("segment", []))
+        if not segments:
+            return events
+
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                continue
+
+            completed = seg.get("completed", False)
+            event_type = EventType.FINAL if completed else EventType.PARTIAL
+
+            start_time = seg.get("start", 0.0)
+            end_time = seg.get("end", 0.0)
+
+            if isinstance(start_time, str):
+                try:
+                    start_time = float(start_time)
+                except (ValueError, TypeError):
+                    start_time = 0.0
+            if isinstance(end_time, str):
+                try:
+                    end_time = float(end_time)
+                except (ValueError, TypeError):
+                    end_time = 0.0
+
+            text = seg.get("text", "").strip() if seg.get("text") else ""
+
+            stable_id = seg.get("id") or f"{start_time:.3f}_{i}"
+
+            events.append(
+                StreamingEvent(
+                    event_id=f"seg_{stable_id}_{uuid.uuid4().hex[:4]}",
+                    event_type=event_type,
+                    data=event,
+                    segment_id=stable_id,
+                    text=text,
+                    start_time=start_time,
+                    end_time=end_time,
+                    language=event.get("language"),
+                    language_prob=event.get("language_prob"),
+                )
+            )
+
+        return events
 
     async def _on_aggregator_event(self, event: StreamingEvent) -> None:
         await self._broadcast_event(event)
@@ -80,16 +194,24 @@ class Pipeline:
             self.state = PipelineState.ERROR
 
     async def _whisper_client_loop(self) -> None:
-        connected = False
+        reconnect_delay = 5.0
         while self.state in (PipelineState.STARTING, PipelineState.RUNNING):
             try:
-                if not connected:
-                    connected = await self.whisper_client.connect(self.audio_queue)
-                    if connected:
+                if not self.whisper_client.is_connected():
+                    logger.info(f"Attempting to connect to WhisperLive...")
+                    success = await self.whisper_client.connect(self.audio_queue)
+                    if success:
                         self.metrics.reconnect_count += 1
                         logger.info("Connected to WhisperLive")
+                        reconnect_delay = 5.0
                     else:
-                        await asyncio.sleep(2.0)
+                        if self.whisper_client.was_waiting():
+                            reconnect_delay = min(reconnect_delay * 1.5, 30.0)
+                        import random
+
+                        jitter = reconnect_delay * random.uniform(0.8, 1.2)
+                        logger.info(f"Connection failed, retrying in {jitter:.1f}s...")
+                        await asyncio.sleep(jitter)
                         continue
 
                 await asyncio.sleep(1.0)
@@ -100,10 +222,8 @@ class Pipeline:
             except Exception as e:
                 logger.error(f"Whisper client error: {e}")
                 self._last_error = str(e)
-                connected = False
-                if self.state == PipelineState.RUNNING:
-                    if await self.whisper_client.reconnect(self.audio_queue):
-                        connected = True
+                reconnect_delay = min(reconnect_delay * 2, 30.0)
+                await asyncio.sleep(reconnect_delay)
 
         if self.whisper_client.is_connected():
             await self.whisper_client.close()
@@ -134,8 +254,7 @@ class Pipeline:
         self.metrics.connected_sse_clients = len(self._sse_clients)
         self.metrics.connected_ws_clients = len(self._ws_clients)
         self.metrics.segments_committed = len(
-            [s for s in self.aggregator.unconsolidated.segments
-             if s.status.value == "committed"]
+            [s for s in self.aggregator.unconsolidated.segments if s.status.value == "committed"]
         )
         self.metrics.questions_extracted = len(self.aggregator.questions)
 
@@ -216,7 +335,7 @@ class Pipeline:
         sample_rate = 0
         if self.audio_capture._device_info:
             audio_device = self.audio_capture._device_info.get("name")
-            sample_rate = self.settings.audio.sample_rate
+            sample_rate = self.settings.audio_sample_rate
 
         ws_status = "connected" if self.whisper_client.is_connected() else "disconnected"
 

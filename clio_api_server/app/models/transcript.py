@@ -1,3 +1,5 @@
+import hashlib
+import re
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
@@ -12,7 +14,7 @@ class SegmentStatus(str, Enum):
 
 
 class TranscriptSegment(BaseModel):
-    segment_id: int
+    segment_id: str
     start_time: float = 0.0
     end_time: float = 0.0
     text: str = ""
@@ -24,11 +26,23 @@ class TranscriptSegment(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     language: Optional[str] = None
     is_english: bool = True
+    text_hash: Optional[str] = None
 
     def normalized_text(self) -> str:
-        return self.text.strip()
+        text = self.text.strip()
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r" ([.,!?;:])", r"\1", text)
+        return text
 
-    def with_updated_text(self, text: str, status: Optional[SegmentStatus] = None) -> "TranscriptSegment":
+    def compute_hash(self) -> str:
+        normalized = self.normalized_text().lower()
+        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    def with_updated_text(
+        self, text: str, status: Optional[SegmentStatus] = None
+    ) -> "TranscriptSegment":
+        self.text = text
+        self.text_hash = self.compute_hash()
         return TranscriptSegment(
             segment_id=self.segment_id,
             start_time=self.start_time,
@@ -42,7 +56,13 @@ class TranscriptSegment(BaseModel):
             updated_at=datetime.utcnow(),
             language=self.language,
             is_english=self.is_english,
+            text_hash=self.text_hash,
         )
+
+
+class CommitLedger(BaseModel):
+    committed_hashes: dict[str, datetime] = Field(default_factory=dict)
+    last_commit_time: Optional[datetime] = None
 
 
 class UnconsolidatedTranscript(BaseModel):
@@ -51,6 +71,9 @@ class UnconsolidatedTranscript(BaseModel):
     last_update: datetime = Field(default_factory=datetime.utcnow)
 
     def add_segment(self, segment: TranscriptSegment) -> None:
+        if segment.text_hash is None:
+            segment.text_hash = segment.compute_hash()
+
         existing = self._find_segment(segment.segment_id)
         if existing:
             if segment.revision > existing.revision:
@@ -62,6 +85,9 @@ class UnconsolidatedTranscript(BaseModel):
         self.last_update = datetime.utcnow()
 
     def update_segment(self, segment: TranscriptSegment) -> bool:
+        if segment.text_hash is None:
+            segment.text_hash = segment.compute_hash()
+
         existing = self._find_segment(segment.segment_id)
         if existing and segment.revision > existing.revision:
             idx = self.segments.index(existing)
@@ -70,16 +96,18 @@ class UnconsolidatedTranscript(BaseModel):
             return True
         return False
 
-    def commit_segment(self, segment_id: int) -> bool:
+    def commit_segment(self, segment_id: str) -> bool:
         for seg in self.segments:
             if seg.segment_id == segment_id and seg.status == SegmentStatus.FINAL:
                 seg.status = SegmentStatus.COMMITTED
                 seg.updated_at = datetime.utcnow()
+                if seg.text_hash is None:
+                    seg.text_hash = seg.compute_hash()
                 self.last_update = datetime.utcnow()
                 return True
         return False
 
-    def _find_segment(self, segment_id: int) -> Optional[TranscriptSegment]:
+    def _find_segment(self, segment_id: str) -> Optional[TranscriptSegment]:
         for seg in self.segments:
             if seg.segment_id == segment_id:
                 return seg
@@ -89,7 +117,12 @@ class UnconsolidatedTranscript(BaseModel):
         return [s for s in self.segments if s.is_english]
 
     def get_final_segments(self) -> List[TranscriptSegment]:
-        return [s for s in self.segments if s.status in (SegmentStatus.FINAL, SegmentStatus.COMMITTED)]
+        return [
+            s for s in self.segments if s.status in (SegmentStatus.FINAL, SegmentStatus.COMMITTED)
+        ]
+
+    def get_committed_segments(self) -> List[TranscriptSegment]:
+        return [s for s in self.segments if s.status == SegmentStatus.COMMITTED]
 
 
 class ConsolidatedTranscript(BaseModel):
@@ -98,26 +131,94 @@ class ConsolidatedTranscript(BaseModel):
     last_update: datetime = Field(default_factory=datetime.utcnow)
     segment_count: int = 0
 
-    def update_from_segments(self, segments: List[TranscriptSegment]) -> None:
-        finalized = [s for s in segments if s.status in (SegmentStatus.FINAL, SegmentStatus.COMMITTED)]
-        new_text_parts = []
-        for seg in sorted(finalized, key=lambda x: x.start_time):
+    def __init__(self, **data):
+        super().__init__(**data)
+        self._committed_hashes = {}
+
+    def update_from_segments(
+        self,
+        segments: List[TranscriptSegment],
+        commit_ledger: Optional[CommitLedger] = None,
+    ) -> None:
+        committed = [s for s in segments if s.status == SegmentStatus.COMMITTED]
+
+        if not committed:
+            return
+
+        new_segments = []
+        for seg in sorted(committed, key=lambda x: (x.start_time, x.segment_id)):
             normalized = seg.normalized_text()
-            if normalized:
-                new_text_parts.append(normalized)
-        new_text = " ".join(new_text_parts)
-        if new_text != self.text:
-            self.text = new_text
-            self.revision += 1
-            self.segment_count = len(finalized)
-            self.last_update = datetime.utcnow()
+            if not normalized:
+                continue
+
+            if seg.text_hash and seg.text_hash in self._committed_hashes:
+                continue
+
+            new_segments.append(seg)
+            if seg.text_hash:
+                self._committed_hashes[seg.text_hash] = datetime.utcnow()
+
+        if not new_segments:
+            return
+
+        for seg in new_segments:
+            normalized = seg.normalized_text()
+            if not normalized:
+                continue
+
+            suffix = self._get_non_overlapping_suffix(normalized, self.text)
+            if suffix:
+                if self.text and not self.text.endswith(" "):
+                    self.text += " "
+                self.text += suffix
+
+        self.text = self.text.strip()
+        self.revision += 1
+        self.segment_count = len(committed)
+        self.last_update = datetime.utcnow()
+
+    def _get_non_overlapping_suffix(self, new_text: str, current_text: str) -> str:
+        if not current_text:
+            return new_text.strip()
+
+        current_normalized = current_text.lower().strip()
+        new_normalized = new_text.lower().strip()
+
+        if new_normalized.startswith(current_normalized):
+            return ""
+
+        if current_normalized.endswith(new_normalized):
+            return ""
+
+        words_current = current_normalized.split()
+        words_new = new_normalized.split()
+
+        max_overlap = 0
+        for i in range(len(words_new), 0, -1):
+            suffix_new = " ".join(words_new[-i:])
+            suffix_current = " ".join(words_current[-i:]) if len(words_current) >= i else ""
+            if suffix_new == suffix_current:
+                max_overlap = i
+                break
+
+        if max_overlap > 0:
+            return " ".join(words_new[max_overlap:]).strip()
+
+        return new_text.strip()
+
+    def reset(self) -> None:
+        self.text = ""
+        self.revision = 0
+        self.segment_count = 0
+        self.last_update = datetime.utcnow()
+        self._committed_hashes = {}
 
 
 class Question(BaseModel):
     question_id: str
     text: str
     normalized_text: str
-    segment_ids: List[int] = Field(default_factory=list)
+    segment_ids: List[str] = Field(default_factory=list)
     first_seen: datetime = Field(default_factory=datetime.utcnow)
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     source_types: List[str] = Field(default_factory=list)
@@ -147,8 +248,16 @@ class Question(BaseModel):
         text_lower = text.lower().strip()
         explicit_markers = ["?", "what", "how", "why", "when", "where", "who", "which", "whose"]
         implicit_markers = [
-            "imagine", "describe", "show me", "tell me", "present", "explain",
-            "what if", "let's say", "suppose", "consider"
+            "imagine",
+            "describe",
+            "show me",
+            "tell me",
+            "present",
+            "explain",
+            "what if",
+            "let's say",
+            "suppose",
+            "consider",
         ]
         for marker in explicit_markers:
             if marker in text_lower:
@@ -161,5 +270,6 @@ class Question(BaseModel):
     @staticmethod
     def _generate_id(text: str) -> str:
         import hashlib
+
         normalized = text.lower().strip()
         return hashlib.sha256(normalized.encode()).hexdigest()[:16]
