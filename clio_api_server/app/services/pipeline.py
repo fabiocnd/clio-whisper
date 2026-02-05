@@ -267,6 +267,10 @@ class Pipeline:
         self.state = PipelineState.STARTING
         self._last_error = None
 
+        self.aggregator.reset()
+        self.audio_queue = asyncio.Queue(maxsize=100)
+        self.event_queue = asyncio.Queue(maxsize=100)
+
         self._audio_task = asyncio.create_task(self._audio_capture_loop())
         self._client_task = asyncio.create_task(self._whisper_client_loop())
         self._aggregator_task = asyncio.create_task(self._aggregator_loop())

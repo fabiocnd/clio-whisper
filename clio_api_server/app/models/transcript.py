@@ -154,6 +154,23 @@ class ConsolidatedTranscript(BaseModel):
             if seg.text_hash and seg.text_hash in self._committed_hashes:
                 continue
 
+            current_lower = self.text.lower().strip() if self.text else ""
+            normalized_lower = normalized.lower().strip()
+
+            current_words = set(current_lower.split())
+            new_words = set(normalized_lower.split())
+
+            is_exact_match = current_lower == normalized_lower
+            is_substring_match = normalized_lower and normalized_lower in current_lower
+            is_highly_similar = (
+                len(new_words) > 0 and len(current_words & new_words) / len(new_words) > 0.8
+            )
+
+            if is_exact_match or is_substring_match or is_highly_similar:
+                if seg.text_hash:
+                    self._committed_hashes[seg.text_hash] = datetime.utcnow()
+                continue
+
             new_segments.append(seg)
             if seg.text_hash:
                 self._committed_hashes[seg.text_hash] = datetime.utcnow()
