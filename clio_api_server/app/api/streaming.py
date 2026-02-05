@@ -16,6 +16,11 @@ async def event_generator(
     pipeline,
     queue: asyncio.Queue,
 ) -> AsyncGenerator[str, None]:
+    """
+    Generate SSE events from the pipeline event queue.
+
+    Yields JSON-formatted events for each transcript update.
+    """
     try:
         while True:
             event = await asyncio.wait_for(queue.get(), timeout=30.0)
@@ -35,6 +40,13 @@ async def event_generator(
 async def stream_transcript_sse(
     pipeline=Depends(get_pipeline),
 ) -> EventSourceResponse:
+    """
+    Stream transcript events via Server-Sent Events (SSE).
+
+    Returns a continuous stream of transcription events including
+    partial results, final segments, and system events.
+    Connect to this endpoint to receive real-time updates.
+    """
     queue = pipeline.add_sse_client()
     return EventSourceResponse(
         event_generator(pipeline, queue),
@@ -47,6 +59,12 @@ async def stream_transcript_ws(
     websocket: WebSocket,
     pipeline=Depends(get_pipeline),
 ):
+    """
+    Stream transcript events via WebSocket.
+
+    Provides the same real-time transcription events as SSE
+    but over a bidirectional WebSocket connection.
+    """
     await websocket.accept()
     queue = pipeline.add_ws_client()
 

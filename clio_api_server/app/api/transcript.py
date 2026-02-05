@@ -19,6 +19,12 @@ def get_pipeline(request: Request):
 async def get_unconsolidated_transcript(
     pipeline=Depends(get_pipeline),
 ) -> UnconsolidatedTranscript:
+    """
+    Get the unconsolidated transcript with all individual segments.
+
+    Returns all transcription segments in their raw form, including partial,
+    final, and committed segments with timing information.
+    """
     return pipeline.aggregator.get_unconsolidated()
 
 
@@ -26,6 +32,11 @@ async def get_unconsolidated_transcript(
 async def get_consolidated_transcript(
     pipeline=Depends(get_pipeline),
 ) -> ConsolidatedTranscript:
+    """
+    Get the consolidated transcript as a single paragraph.
+
+    Returns deduplicated, aggregated text from all committed segments.
+    """
     return pipeline.aggregator.get_consolidated()
 
 
@@ -33,4 +44,10 @@ async def get_consolidated_transcript(
 async def get_questions(
     pipeline=Depends(get_pipeline),
 ) -> List[Question]:
+    """
+    Get extracted questions from the transcript.
+
+    Returns a list of detected questions, both explicit (with ?) and
+    implicit (imperative prompts like 'Imagine...').
+    """
     return pipeline.aggregator.get_questions()

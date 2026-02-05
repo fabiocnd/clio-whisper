@@ -20,6 +20,7 @@ class Pipeline:
         self.settings = get_settings()
         self.state = PipelineState.STOPPED
         self._running = False
+        self._is_first_connection = True
 
         self.audio_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -195,13 +196,19 @@ class Pipeline:
 
     async def _whisper_client_loop(self) -> None:
         reconnect_delay = 5.0
+        first_connection = True
         while self.state in (PipelineState.STARTING, PipelineState.RUNNING):
             try:
                 if not self.whisper_client.is_connected():
                     logger.info(f"Attempting to connect to WhisperLive...")
                     success = await self.whisper_client.connect(self.audio_queue)
                     if success:
-                        self.metrics.reconnect_count += 1
+                        if not first_connection:
+                            self.metrics.reconnect_count += 1
+                            logger.info(
+                                f"Reconnected to WhisperLive (reconnect #{self.metrics.reconnect_count})"
+                            )
+                        first_connection = False
                         logger.info("Connected to WhisperLive")
                         reconnect_delay = 5.0
                     else:
@@ -257,6 +264,19 @@ class Pipeline:
             [s for s in self.aggregator.unconsolidated.segments if s.status.value == "committed"]
         )
         self.metrics.questions_extracted = len(self.aggregator.questions)
+        self._check_queue_health()
+
+    def _check_queue_health(self) -> None:
+        audio_capacity = self.audio_queue.maxsize
+        if audio_capacity:
+            audio_ratio = self.audio_queue.qsize() / audio_capacity
+            if audio_ratio > 0.9:
+                logger.warning(
+                    f"Audio queue nearly full: {self.audio_queue.qsize()}/{audio_capacity}"
+                )
+                self.metrics.audio_queue_overflow = True
+            else:
+                self.metrics.audio_queue_overflow = False
 
     async def start(self) -> bool:
         if self.state != PipelineState.STOPPED:
