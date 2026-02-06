@@ -91,13 +91,23 @@ async def get_questions():
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return """
+    ui_max_chars = settings.ui_consolidated_max_chars
+    ui_multiple_boxes = str(settings.ui_show_multiple_segment_boxes).lower()
+    html_start = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clio Whisper - Real-time Transcription</title>
+    <title>Clio Whisper v1.0.0 - Real-time Transcription</title>
+    <script>
+        const UI_CONFIG = {{
+            consolidatedMaxChars: {ui_max_chars},
+            showMultipleSegmentBoxes: {ui_multiple_boxes}
+        }};
+    </script>
+"""
+    html_css = """
     <style>
         :root {
             --bg-primary: #0d1117;
@@ -238,6 +248,26 @@ async def root():
             gap: 8px;
         }
 
+        .segments-list.compact {
+            gap: 2px;
+        }
+
+        .segments-list.compact .segment-item {
+            padding: 8px 12px;
+            margin-bottom: 2px;
+            border-left: 3px solid var(--accent-blue);
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+        }
+
+        .segments-list.compact .segment-header {
+            display: none;
+        }
+
+        .segments-list.compact .segment-text {
+            font-size: 13px;
+        }
+
         .segment-item {
             padding: 12px 16px;
             background: var(--bg-tertiary);
@@ -281,11 +311,28 @@ async def root():
             line-height: 1.5;
         }
 
+        .consolidated-wrapper {
+            position: relative;
+        }
+
         .consolidated-text {
             font-size: 16px;
             line-height: 1.8;
             color: var(--text-primary);
             white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .consolidated-fade {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            background: linear-gradient(transparent, var(--bg-secondary));
+            pointer-events: none;
         }
 
         .questions-grid {
@@ -418,7 +465,10 @@ async def root():
     <header class="header">
         <div class="logo">
             <div class="logo-icon">CW</div>
-            <h1>Clio Whisper</h1>
+            <div>
+                <h1>Clio Whisper</h1>
+                <span style="font-size: 11px; color: var(--text-secondary);">v1.0.0</span>
+            </div>
         </div>
         <div class="status-bar">
             <div class="status-badge">
@@ -458,7 +508,10 @@ async def root():
                 <span style="font-size: 12px; color: var(--text-secondary);" id="consolidatedRev"></span>
             </div>
             <div class="panel-body">
-                <div id="consolidatedText" class="consolidated-text">Waiting for transcript...</div>
+                <div class="consolidated-wrapper">
+                    <div id="consolidatedText" class="consolidated-text">Waiting for transcript...</div>
+                    <div class="consolidated-fade"></div>
+                </div>
             </div>
         </div>
 
@@ -637,8 +690,9 @@ async def root():
                 const response = await fetch('/v1/transcript/unconsolidated');
                 const data = await response.json();
                 segments = data.segments || [];
-
-                document.getElementById('segmentsCount').textContent = data.total_segments || 0;
+                
+                const unconsolidatedCount = segments.filter(function(s) { return s.status === 'partial' || s.status === 'final'; }).length;
+                document.getElementById('segmentsCount').textContent = unconsolidatedCount + ' unconsolidated';
                 document.getElementById('lastUpdate').textContent = data.last_update ? new Date(data.last_update).toLocaleTimeString() : '';
 
                 const segmentsEl = document.getElementById('segmentsList');
@@ -648,12 +702,24 @@ async def root():
                     return;
                 }
 
-                const html = segments.slice(-20).reverse().map(function(s) {
-                    var statusClass = s.status === 'final' ? 'final' : (s.status === 'committed' ? 'committed' : 'partial');
-                    return '<div class="segment-item ' + statusClass + '"><div class="segment-header"><span>' + (s.start_time ? s.start_time.toFixed(1) : '0.0') + 's - ' + (s.end_time ? s.end_time.toFixed(1) : '0.0') + 's</span><span class="segment-status ' + s.status + '">' + s.status + '</span></div><div class="segment-text">' + (s.text || '') + '</div></div>';
-                }).join('');
-
-                segmentsEl.innerHTML = html;
+                if (UI_CONFIG.showMultipleSegmentBoxes) {
+                    const html = segments.slice(-20).reverse().map(function(s) {
+                        var statusClass = s.status === 'final' ? 'final' : (s.status === 'committed' ? 'committed' : 'partial');
+                        return '<div class="segment-item ' + statusClass + '"><div class="segment-header"><span>' + (s.start_time ? s.start_time.toFixed(1) : '0.0') + 's - ' + (s.end_time ? s.end_time.toFixed(1) : '0.0') + 's</span><span class="segment-status ' + s.status + '">' + s.status + '</span></div><div class="segment-text">' + (s.text || '') + '</div></div>';
+                    }).join('');
+                    segmentsEl.innerHTML = html;
+                    segmentsEl.classList.remove('compact');
+                } else {
+                    const unconsolidatedSegments = segments.filter(function(s) { return s.status === 'partial' || s.status === 'final' || s.status === 'committed'; });
+                    if (unconsolidatedSegments.length === 0) {
+                        segmentsEl.innerHTML = '<div class="empty-state"><p>No unconsolidated segments.</p></div>';
+                    } else {
+                        const combinedText = unconsolidatedSegments.map(function(s) { return s.text || ''; }).join(' ');
+                        const html = '<div class="segment-item single-box"><div class="segment-text">' + combinedText + '</div></div>';
+                        segmentsEl.innerHTML = html;
+                        segmentsEl.classList.add('compact');
+                    }
+                }
             } catch (err) {
                 console.error('Error updating segments:', err);
             }
@@ -664,8 +730,17 @@ async def root():
                 const response = await fetch('/v1/transcript/consolidated');
                 const data = await response.json();
 
-                document.getElementById('consolidatedText').textContent = data.text || 'Waiting for transcript...';
+                let text = data.text || 'Waiting for transcript...';
+
+                if (UI_CONFIG.consolidatedMaxChars > 0 && text.length > UI_CONFIG.consolidatedMaxChars) {
+                    text = '...' + text.substring(text.length - UI_CONFIG.consolidatedMaxChars);
+                }
+
+                const consolidatedEl = document.getElementById('consolidatedText');
+                consolidatedEl.textContent = text;
                 document.getElementById('consolidatedRev').textContent = 'v' + data.revision + ' | ' + (data.segment_count || 0) + ' segments';
+
+                consolidatedEl.parentElement.scrollTop = consolidatedEl.parentElement.scrollHeight;
             } catch (err) {
                 console.error('Error updating consolidated:', err);
             }
@@ -700,33 +775,19 @@ async def root():
             try {
                 const response = await fetch('/v1/status');
                 const data = await response.json();
-
                 updateStatus(data.state, data.ws_connection);
-
-                const queues = data.queue_depths || {};
-                document.getElementById('metricReceived').textContent = queues.segments_received || 0;
-                document.getElementById('metricCommitted').textContent = queues.segments_committed || 0;
-                document.getElementById('metricDropped').textContent = queues.segments_dropped || 0;
-                document.getElementById('metricReconnects').textContent = queues.reconnect_count || 0;
-                document.getElementById('metricSSE').textContent = queues.connected_sse_clients || 0;
-                document.getElementById('metricQueue').textContent = (queues.audio_queue_depth || 0) + (queues.event_queue_depth || 0);
-
-                if (data.state === 'RUNNING') {
-                    updateSegments();
-                    updateConsolidated();
-                    updateQuestions();
-                }
             } catch (err) {
                 console.error('Error checking status:', err);
             }
         }
 
-        setInterval(checkStatus, 2000);
+        setInterval(checkStatus, 5000);
         checkStatus();
     </script>
 </body>
 </html>
 """
+    return html_start + html_css
 
 
 def main():

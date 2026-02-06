@@ -11,7 +11,7 @@ from clio_api_server.app.core.config import get_settings
 
 
 class WhisperLiveClient:
-    END_OF_AUDIO = "END_OF_AUDIO"
+    END_OF_AUDIO = b"END_OF_AUDIO"
 
     def __init__(
         self,
@@ -123,6 +123,7 @@ class WhisperLiveClient:
     async def _audio_sender(self, audio_queue: asyncio.Queue) -> None:
         logger.info("Audio sender task started")
         audio_format = self.settings.whisperlive_audio_format
+        frames_sent = 0
 
         while self._running:
             try:
@@ -132,6 +133,7 @@ class WhisperLiveClient:
                 )
                 if not self._running:
                     break
+                logger.info(f"Audio sender: received {len(audio_data)} bytes")
                 if self._websocket and self._connected:
                     if audio_format == "float32":
                         audio_array = (
@@ -140,7 +142,10 @@ class WhisperLiveClient:
                         await self._websocket.send(audio_array.tobytes())
                     else:
                         await self._websocket.send(audio_data)
+                    frames_sent += 1
                     self._messages_sent += 1
+                    if frames_sent % 10 == 0:
+                        logger.info(f"Audio sender: {frames_sent} frames sent")
             except asyncio.TimeoutError:
                 continue
             except websockets.exceptions.ConnectionClosed:
@@ -149,7 +154,7 @@ class WhisperLiveClient:
             except Exception as e:
                 logger.error(f"Audio send error: {e}")
                 break
-        logger.info("Audio sender task stopped")
+        logger.info(f"Audio sender task stopped. Total frames sent: {frames_sent}")
 
     async def _event_receiver(self) -> None:
         print(
@@ -262,11 +267,15 @@ class WhisperLiveClient:
     async def send_end_of_audio(self) -> None:
         if self._websocket and self._connected:
             try:
+                logger.info(f"Sending END_OF_AUDIO as bytes: {self.END_OF_AUDIO}")
                 await self._websocket.send(self.END_OF_AUDIO)
                 self._messages_sent += 1
                 logger.info("Sent END_OF_AUDIO signal")
             except Exception as e:
                 logger.error(f"Failed to send END_OF_AUDIO: {e}")
+                import traceback
+
+                traceback.print_exc()
 
     async def close(self) -> None:
         self._running = False

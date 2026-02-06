@@ -44,6 +44,9 @@ class Settings(BaseSettings):
 
     ui_enabled: bool = True
 
+    ui_consolidated_max_chars: int = 500
+    ui_show_multiple_segment_boxes: bool = False
+
     redis_enabled: bool = False
     redis_host: str = "localhost"
     redis_port: int = 6379
