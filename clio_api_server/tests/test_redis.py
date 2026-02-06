@@ -50,12 +50,14 @@ class TestRedisStreamManager:
             assert config.consumer_group.startswith(prefix)
 
     @pytest.mark.asyncio
-    async def test_connect_success(self, stream_manager):
-        """Test successful Redis connection (expected to fail without Redis)."""
-        from clio_api_server.app.services.redis_stream_manager import RedisConnectionError
+    async def test_connect_success(self, mock_redis):
+        """Test successful Redis connection when Redis is available."""
+        from clio_api_server.app.services.redis_stream_manager import RedisStreamManager
 
-        with pytest.raises(RedisConnectionError):
-            await stream_manager.connect()
+        with patch("redis.asyncio.Redis", return_value=mock_redis):
+            manager = RedisStreamManager()
+            await manager.connect()
+            assert manager._redis is not None
 
     @pytest.mark.asyncio
     async def test_publish_audio(self, stream_manager, mock_redis):

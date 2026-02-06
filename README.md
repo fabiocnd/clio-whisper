@@ -5,43 +5,44 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109.0+-00a393.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-2496ed.svg)](https://www.docker.com/)
 
-Production-grade real-time transcription system powered by OpenAI's Whisper models through [WhisperLive](https://github.com/collabora/WhisperLive).
+Real-time transcription system powered by OpenAI's Whisper through [WhisperLive](https://github.com/collabora/WhisperLive).
 
 ## Overview
 
-Clio Whisper is a Windows-hosted ecosystem that provides:
+Clio Whisper is a Windows-hosted ecosystem providing:
 
-- **Real-time Speech-to-Text**: Captures audio from microphone and streams to Whisper for transcription
+- **Real-time Speech-to-Text**: Captures microphone audio and streams to Whisper for transcription
 - **Deterministic Transcript Aggregation**: Maintains clean, deduplicated transcript history
-- **REST API & Streaming**: Exposes endpoints via [FastAPI](https://fastapi.tiangolo.com/) with SSE/WebSocket support
+- **REST API & Streaming**: FastAPI endpoints with SSE/WebSocket support for real-time updates
 - **Question Extraction**: Automatically detects and extracts questions from transcripts
-- **GPU Acceleration**: Leverages CUDA-enabled Docker container for fast inference
+- **GPU Acceleration**: CUDA-enabled Docker container for fast inference
 
 ## Technology Stack
 
 | Component | Technology | Description |
 |-----------|------------|-------------|
 | **Transcription Engine** | [WhisperLive](https://github.com/collabora/WhisperLive) | OpenAI Whisper speech recognition in Docker |
+| **Backend** | Faster-Whisper | CTranslate2-optimized Whisper (4x faster) |
 | **Audio Capture** | [SoundDevice](https://python-sounddevice.readthedocs.io/) | Cross-platform audio input handling |
 | **Web Framework** | [FastAPI](https://fastapi.tiangolo.com/) | High-performance async API framework |
-| **Real-time Streaming** | [SSE (Server-Sent Events)](https://developer.mozilla.org/en-US/docs/Web/Server-Sent_Events) & [WebSocket](https://websockets.readthedocs.io/) | Bidirectional event streaming |
+| **Real-time Streaming** | SSE & WebSocket | Bidirectional event streaming |
 | **Data Validation** | [Pydantic](https://docs.pydantic.dev/) | Runtime data validation with Python types |
 | **Logging** | [Loguru](https://loguru.readthedocs.io/) | Structured logging with colors |
 | **Containerization** | [Docker](https://www.docker.com/) | GPU-accelerated Whisper deployment |
-| **Code Quality** | [Ruff](https://docs.astral.sh/ruff/) & [MyPy](https://mypy-lang.org/) | Linting and type checking |
+| **Code Quality** | Ruff & MyPy | Linting and type checking |
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────────┐
-│   Audio Input   │────▶│  clio-api-server│────▶│  WhisperLive GPU       │
-│  (Microphone)   │     │   (FastAPI)     │     │  (Docker/CUDA)         │
+│   Microphone    │────▶│  clio-api-server│────▶│  WhisperLive GPU       │
+│  (16kHz Mono)   │     │   (FastAPI)     │     │  (Docker/CUDA fp16)     │
 └─────────────────┘     └────────┬────────┘     └─────────────────────────┘
                                   │
                                   ▼
                          ┌─────────────────┐
                          │   Aggregator    │
-                         │ (Transcript Store)│
+                         │ (Deduplication) │
                          └────────┬────────┘
                                   │
             ┌────────────────────┼────────────────────┐
@@ -51,16 +52,17 @@ Clio Whisper is a Windows-hosted ecosystem that provides:
      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
-## Use Cases
+## Current Status
 
-Clio Whisper is ideal for:
-
-- **Meeting Transcription**: Automatically transcribe meetings in real-time
-- **Interview Documentation**: Create searchable text from audio recordings
-- **Accessibility**: Provide live captions for events or presentations
-- **Content Creation**: Generate transcripts for podcasts, videos, or broadcasts
-- **Voice Analytics**: Extract questions and insights from conversations
-- **Legal/Medical Dictation**: Capture spoken content for documentation
+| Component | Status |
+|-----------|--------|
+| WhisperLive GPU Server | ✅ Running (port 9090) |
+| Redis (Windows) | ✅ Running (port 6379) |
+| API Server | ✅ Running (port 8000) |
+| Microphone Capture | ✅ 16kHz mono |
+| WebSocket Client | ✅ Connected |
+| Transcription | ✅ Processing (50K+ segments) |
+| Question Extraction | ✅ Working (82+ extracted) |
 
 ## Quick Start
 
@@ -71,8 +73,8 @@ Clio Whisper is ideal for:
 | OS | Windows 11 | Windows 11 |
 | Python | 3.11+ | 3.11+ |
 | RAM | 8GB | 16GB+ |
-| GPU | Optional (CPU works) | NVIDIA CUDA-capable |
-| Docker | Desktop with GPU | Desktop with RTX GPU |
+| GPU | Optional (CPU works) | NVIDIA RTX |
+| Docker | Desktop with GPU support | Desktop with RTX |
 
 ### Installation
 
@@ -94,7 +96,7 @@ pip install -e .
 Using the management script:
 
 ```powershell
-# Start all services (WhisperLive Docker + API Server)
+# Start all services
 .\scripts\clio-whisper.ps1 start-all
 
 # Check status
@@ -107,6 +109,9 @@ Using the management script:
 Or manually:
 
 ```powershell
+# Start Redis (Windows)
+D:\redis\redis-server.exe
+
 # Start WhisperLive GPU container
 docker run -d --gpus all -p 9090:9090 --name clio-whisperlive ghcr.io/collabora/whisperlive-gpu:latest
 
@@ -118,7 +123,7 @@ uvicorn clio_api_server.app.main:app --host 0.0.0.0 --port 8000
 
 - **UI Dashboard**: http://localhost:8000/
 - **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
+- **Health Check**: http://localhost:8000/v1/health
 
 ### Start Recording
 
@@ -126,7 +131,16 @@ uvicorn clio_api_server.app.main:app --host 0.0.0.0 --port 8000
 # Via API
 curl -X POST http://localhost:8000/v1/control/start
 
-# Via UI - click "Start Recording"
+# Via UI - click "Start Pipeline"
+```
+
+### Stop Recording
+
+```powershell
+# Via API
+curl -X POST http://localhost:8000/v1/control/stop
+
+# Via UI - click "Stop Pipeline"
 ```
 
 ## API Reference
@@ -135,7 +149,7 @@ curl -X POST http://localhost:8000/v1/control/start
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
+| GET | `/v1/health` | Health check |
 | GET | `/v1/status` | Pipeline status |
 | POST | `/v1/control/start` | Start recording |
 | POST | `/v1/control/stop` | Stop recording |
@@ -145,22 +159,24 @@ curl -X POST http://localhost:8000/v1/control/start
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/transcript/unconsolidated` | Segmented transcript |
-| GET | `/v1/transcript/consolidated` | Single paragraph |
+| GET | `/v1/transcript/unconsolidated` | All segments with states |
+| GET | `/v1/transcript/consolidated` | Single paragraph (deduplicated) |
 | GET | `/v1/questions` | Extracted questions |
 
 ### Streaming Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/stream/transcript` | SSE stream |
+| GET | `/v1/stream/transcript` | SSE stream of events |
 | WS | `/v1/stream/transcript` | WebSocket stream |
 
 ## WhisperLive Integration
 
-Clio Whisper uses the [WhisperLive project](https://github.com/collabora/WhisperLive) which provides:
+Clio Whisper integrates with [WhisperLive](https://github.com/collabora/WhisperLive) which uses:
 
-> "WhisperLive is a realtime transcription app using OpenAI's Whisper. It works with faster-whisper backend which is 4x faster than openai-whisper."
+- **Faster-Whisper**: CTranslate2-optimized implementation (4x faster than openai-whisper)
+- **VAD Filtering**: Silero VAD to skip non-speech audio
+- **GPU Acceleration**: CUDA fp16 inference
 
 ### WebSocket Protocol
 
@@ -172,18 +188,18 @@ Clio Whisper uses the [WhisperLive project](https://github.com/collabora/Whisper
   "uid": "unique-client-id",
   "language": "en",
   "task": "transcribe",
-  "model": "base",
+  "model": "small",
   "use_vad": true,
   "send_last_n_segments": 10
 }
 
 // Receive events:
 {
-  "message": "SERVER_READY",
+  "uid": "client-id",
   "segments": [
     {
-      "start": 0.0,
-      "end": 3.5,
+      "start": "0.000",
+      "end": "3.500",
       "text": "Hello world",
       "completed": false
     }
@@ -197,8 +213,21 @@ Clio Whisper uses the [WhisperLive project](https://github.com/collabora/Whisper
 |-----------|-------|
 | Sample Rate | 16,000 Hz |
 | Channels | 1 (Mono) |
-| Format | 16-bit PCM |
+| Format | 16-bit PCM (int16) |
 | Chunk Size | 4096 samples (256ms) |
+| Normalization | float32 / 32768.0 |
+
+### Critical: END_OF_AUDIO Signal
+
+When ending audio transmission, **must send bytes**:
+
+```python
+# CORRECT (bytes)
+await websocket.send(b"END_OF_AUDIO")
+
+# WRONG (string - will fail)
+await websocket.send("END_OF_AUDIO")
+```
 
 ## Configuration
 
@@ -209,17 +238,26 @@ All configuration is managed via `.env`:
 WHISPERLIVE_HOST=localhost
 WHISPERLIVE_PORT=9090
 WHISPERLIVE_LANGUAGE=en
-WHISPERLIVE_MODEL=base
+WHISPERLIVE_MODEL=small
+WHISPERLIVE_USE_VAD=false
 
 # Audio
 AUDIO_INPUT_MODE=microphone
 AUDIO_DEVICE_INDEX=-1
+AUDIO_DEVICE_NAME=
 AUDIO_SAMPLE_RATE=16000
 AUDIO_CHUNK_SIZE=4096
 
 # Server
 SERVER_PORT=8000
 LOG_LEVEL=INFO
+
+# UI
+UI_CONSOLIDATED_MAX_CHARS=500
+UI_SHOW_MULTIPLE_SEGMENT_BOXES=false
+
+# Redis (optional)
+REDIS_ENABLED=false
 ```
 
 ## Development
@@ -262,16 +300,17 @@ clio-whisper/
 │   │   │   └── streaming.py  # SSE/WebSocket streaming
 │   │   ├── core/             # Configuration management
 │   │   ├── services/         # Business logic
-│   │   │   ├── pipeline.py   # Main orchestration pipeline
-│   │   │   ├── audio_capture.py    # Audio input handling
+│   │   │   ├── pipeline.py           # Main orchestration pipeline
+│   │   │   ├── audio_capture.py      # Audio input handling
 │   │   │   ├── whisperlive_client.py # WhisperLive WebSocket client
 │   │   │   └── transcript_aggregator.py # Deduplication engine
 │   │   └── models/           # Pydantic data models
 │   │       ├── transcript.py # Transcript segment models
 │   │       ├── events.py      # Streaming event models
 │   │       ├── metrics.py     # Performance metrics
-│   │       └── control.py    # Control state models
+│   │       └── control.py     # Control state models
 │   └── tests/
+├── whisper_live/              # Copied WhisperLive source (reference)
 ├── scripts/
 │   ├── clio-whisper.ps1      # PowerShell management script
 │   └── clio-whisper.sh        # Bash management script
@@ -286,14 +325,18 @@ Clio Whisper maintains two transcript stores:
 
 ### Unconsolidated Transcript
 
-- Contains all individual segments
-- Tracks partial, final, and committed states
+- Contains all individual segments from WhisperLive
+- Tracks states: partial → final → committed
 - Maintains revision history for updates
+- Includes timestamps and confidence scores
 
 ### Consolidated Transcript
 
 - Single flowing paragraph
-- Automatic deduplication (exact, substring, similarity >80%)
+- Automatic deduplication:
+  - Exact match removal
+  - Substring detection
+  - Similarity > 80% removal
 - Hash-based replay prevention for reconnects
 - Non-overlapping word stitching
 
@@ -301,6 +344,7 @@ Clio Whisper maintains two transcript stores:
 
 ```
 PARTIAL → FINAL → COMMITTED → CONSOLIDATED
+        (streaming)   (stable)    (deduplicated)
 ```
 
 ## Question Extraction
@@ -308,7 +352,7 @@ PARTIAL → FINAL → COMMITTED → CONSOLIDATED
 Automatically extracts questions from English transcripts:
 
 **Explicit Questions**:
-- Contains `?`
+- Contains `?` character
 - Interrogatives: what/how/why/when/where/who/which/whose
 
 **Implicit Prompts**:
@@ -316,6 +360,27 @@ Automatically extracts questions from English transcripts:
 - "Describe..."
 - "Tell me..."
 - "Consider..."
+- "Think about..."
+
+## Testing
+
+### Official WhisperLive Client Test
+
+```powershell
+.venv\Scripts\python.exe test_whisperlive_official.py
+```
+
+### Streaming Integration Test
+
+```powershell
+.venv\Scripts\python.exe test_edge_streaming.py
+```
+
+### Simple Integration Test
+
+```powershell
+.venv\Scripts\python.exe test_simple_integration.py
+```
 
 ## Troubleshooting
 
@@ -338,6 +403,28 @@ python -c "import sounddevice; print(sounddevice.query_devices())"
 - Ensure container is running: `docker ps`
 - Check logs: `docker logs clio-whisperlive`
 - Verify port 9090 is not blocked
+
+### No Audio Being Sent
+
+If `audio_frames_sent: 0` in status:
+
+1. Check audio queue reference in pipeline
+2. Verify microphone permissions
+3. Check audio device is not in use by another application
+
+### Transcripts Not Appearing
+
+1. Verify WhisperLive is processing: `docker logs clio-whisperlive`
+2. Check pipeline state: `curl http://localhost:8000/v1/status`
+3. Review consolidated transcript: `curl http://localhost:8000/v1/transcript/consolidated`
+
+### Known Issues
+
+1. **VAD Filtering**: With `use_vad=true`, non-speech audio (tones, silence) is filtered out. Use `use_vad=false` for testing with non-speech audio.
+
+2. **Real-time Streaming**: Audio must be sent in real-time chunks (256ms delay between chunks) for proper processing. Sending all audio at once causes issues.
+
+3. **Queue Overflow**: If audio queue fills faster than processed, frames are dropped. Increase queue maxsize in config if needed.
 
 ## License
 

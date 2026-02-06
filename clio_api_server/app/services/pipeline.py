@@ -291,6 +291,9 @@ class Pipeline:
         self.audio_queue = asyncio.Queue(maxsize=100)
         self.event_queue = asyncio.Queue(maxsize=100)
 
+        # Update audio_capture to use the new queue
+        self.audio_capture.audio_queue = self.audio_queue
+
         self._audio_task = asyncio.create_task(self._audio_capture_loop())
         self._client_task = asyncio.create_task(self._whisper_client_loop())
         self._aggregator_task = asyncio.create_task(self._aggregator_loop())
